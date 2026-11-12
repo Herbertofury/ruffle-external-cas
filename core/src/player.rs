@@ -2469,6 +2469,26 @@ impl Player {
         })
     }
 
+    /// External CAS GFx host seam. Retained function callbacks are rooted in
+    /// this Player's GC arena and are never serialized as Null.
+    pub fn call_retained_avm2_function(
+        &mut self,
+        id: u64,
+        args: Vec<ExternalValue>,
+    ) -> Result<ExternalValue, String> {
+        self.mutate_with_update_context(|context| {
+            let value = context.external_interface.retained_avm2_value(id)
+                .ok_or("unknown source VM handle")?;
+            let crate::avm2::Value::Object(object) = value else {
+                return Err("retained source VM value is not an object".into());
+            };
+            let method = object.as_function_object()
+                .ok_or("retained source VM value is not a function")?;
+            Ok(crate::external::Callback::Avm2 { method }
+                .call(context, "retained native callback", args))
+        })
+    }
+
     pub fn spoofed_url(&self) -> Option<&str> {
         self.spoofed_url.as_deref()
     }

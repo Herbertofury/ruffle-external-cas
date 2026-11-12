@@ -668,6 +668,7 @@ impl<'gc> Avm2<'gc> {
         // This will print the properly formatted error
         let stringified = error.to_string(activation);
         tracing::error!("{}: {}", extra_info, stringified);
+        activation.context.log.avm_error(&format!("{extra_info}: {stringified}"));
 
         // TODO: push the error onto `loaderInfo.uncaughtErrorEvents`
     }

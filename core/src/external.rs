@@ -28,6 +28,9 @@ pub enum Value {
     String(String),
     Object(BTreeMap<String, Value>),
     List(Vec<Value>),
+    /// Native GFx host adapter: retained non-plain AVM2 values (including
+    /// function callbacks) stay rooted in this Player instead of becoming Null.
+    Avm2Handle(u64),
 }
 
 impl From<AvmString<'_>> for Value {
@@ -156,6 +159,10 @@ impl Value {
 
     pub fn into_avm1<'gc>(self, activation: &mut Avm1Activation<'_, 'gc>) -> Avm1Value<'gc> {
         match self {
+            Value::Avm2Handle(_) => {
+                tracing::error!("An AVM2-only retained host value cannot enter AVM1");
+                Avm1Value::Undefined
+            }
             Value::Undefined => Avm1Value::Undefined,
             Value::Null => Avm1Value::Null,
             Value::Bool(value) => Avm1Value::Bool(value),
@@ -229,8 +236,7 @@ impl Value {
 
                     Value::Object(values)
                 } else {
-                    tracing::warn!("from_avm2 needs to be implemented for Avm2Value::Object");
-                    Value::Null
+                    Value::Avm2Handle(activation.context.external_interface.retain_avm2_value(value))
                 }
             }
         })
@@ -238,6 +244,7 @@ impl Value {
 
     pub fn into_avm2<'gc>(self, context: &mut UpdateContext<'gc>) -> Avm2Value<'gc> {
         match self {
+            Value::Avm2Handle(id) => context.external_interface.retained_avm2_value(id).unwrap_or(Avm2Value::Undefined),
             Value::Undefined => Avm2Value::Undefined,
             Value::Null => Avm2Value::Null,
             Value::Bool(value) => Avm2Value::Bool(value),
@@ -368,6 +375,7 @@ pub struct ExternalInterface<'gc> {
     #[collect(require_static)]
     provider: Option<Rc<dyn ExternalInterfaceProvider>>,
     callbacks: BTreeMap<String, Callback<'gc>>,
+    retained_avm2_values: Vec<(u64, Avm2Value<'gc>)>,
     #[collect(require_static)]
     fs_commands: Box<dyn FsCommandProvider>,
 }
@@ -380,6 +388,7 @@ impl<'gc> ExternalInterface<'gc> {
         Self {
             provider: provider.map(Rc::from),
             callbacks: Default::default(),
+            retained_avm2_values: Vec::new(),
             fs_commands,
         }
     }
@@ -401,6 +410,23 @@ impl<'gc> ExternalInterface<'gc> {
 
     pub fn get_callback(&self, name: &str) -> Option<Callback<'gc>> {
         self.callbacks.get(name).cloned()
+    }
+
+    pub fn retain_avm2_value(&mut self, value: Avm2Value<'gc>) -> u64 {
+        if let Some((id, _)) = self.retained_avm2_values.iter().find(|(_, v)| match (*v, value) {
+            (Avm2Value::Object(a), Avm2Value::Object(b)) => a == b,
+            _ => false,
+        }) {
+            return *id;
+        }
+        static NEXT_HANDLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = NEXT_HANDLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.retained_avm2_values.push((id, value));
+        id
+    }
+
+    pub fn retained_avm2_value(&self, id: u64) -> Option<Avm2Value<'gc>> {
+        self.retained_avm2_values.iter().find(|(handle, _)| *handle == id).map(|(_, value)| *value)
     }
 
     pub fn call_method(context: &mut UpdateContext<'gc>, name: &str, args: &[Value]) -> Value {

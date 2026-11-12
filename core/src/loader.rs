@@ -219,12 +219,12 @@ impl From<crate::avm1::Error<'_>> for Error {
 /// Holds all in-progress loads for the player.
 #[derive(Collect)]
 #[collect(no_drop)]
-pub struct LoadManager<'gc>(SlotMap<LoaderHandle, MovieLoader<'gc>>);
+pub struct LoadManager<'gc>(SlotMap<LoaderHandle, MovieLoader<'gc>>, Vec<(String, Avm2Domain<'gc>, SwfMovie<'gc>)>);
 
 impl<'gc> LoadManager<'gc> {
     /// Construct a new `LoadManager`.
     pub fn new() -> Self {
-        Self(SlotMap::with_key())
+        Self(SlotMap::with_key(), Vec::new())
     }
 
     /// Add a new loader to the `LoadManager`.
@@ -326,73 +326,71 @@ impl<'gc> LoadManager<'gc> {
         loader.movie_loader(player, request, loader_url)
     }
 
+    // External CAS private experimental AS3 ImportAssets adapter. Not a stock
+    // Ruffle behavior qualification. Only source-pinned memory fetches are used
+    // by the isolated harness; no game/native commands execute.
     pub fn load_asset_movie(
-        uc: &UpdateContext<'gc>,
-        request: Request,
-        importer_movie: MovieClip<'gc>,
+        uc: &UpdateContext<'gc>, request: Request, importer_movie: MovieClip<'gc>,
     ) -> OwnedFuture<(), Error> {
-        // TODO: Observe more closely how this should behave in AVM2.
-        // It looks like AVM2 is more strict than AVM1 regarding when
-        // something is not a valid import, and doesn't continue
-        // executing when that is the case(?).
-        let player = uc.player_handle();
-        let importer_movie = MovieClipHandle::stash(uc, importer_movie);
-
+        let player=uc.player_handle();
+        let importer_movie=MovieClipHandle::stash(uc,importer_movie);
         Box::pin(async move {
-            let fetch = player.lock().unwrap().fetch(request, FetchReason::LoadSwf);
-
-            match wait_for_full_response(fetch).await {
-                // TODO: In some cases, if the fetched url is a directory,
-                // FP will ignore it and continue to execute the movie.
-                Ok((body, url, _status, _redirected)) => {
-                    let content_type = ContentType::sniff(&body);
-                    tracing::info!("Loading imported movie: {:?}", url);
-
-                    player.lock().unwrap().mutate_with_update_context(|uc| {
-                        let importer_movie = importer_movie.fetch(uc);
-
-                        if matches!(content_type, ContentType::Swf) {
-                            let movie = SwfMovieData::from_data(
-                                &body,
-                                url.clone(),
-                                Some(url.clone()),
-                                None,
-                            )
-                            .expect("Could not load movie");
-
-                            let movie = SwfMovie::new(uc.gc(), movie);
-
-                            let clip = MovieClip::new_import_assets(uc, movie, importer_movie);
-
-                            clip.set_cur_preload_frame(0);
-                            let mut execution_limit = ExecutionLimit::none();
-
-                            tracing::debug!("Preloading swf to run exports {:?}", url);
-
-                            // Create library for exports before preloading
-                            uc.library.library_for_movie_mut(clip.movie());
-                            let res = clip.preload(uc, &mut execution_limit);
-                            tracing::debug!(
-                                "Preloaded swf to run exports result {:?} {}",
-                                url,
-                                res
-                            );
-                        } else {
-                            tracing::warn!(
-                                "Unsupported content type for ImportAssets: {:?}",
-                                content_type
-                            );
-                        }
-
-                        importer_movie.finish_importing();
-                    });
-                    Ok(())
+            let result = async {
+            let fetch=player.lock().unwrap().fetch(request,FetchReason::LoadSwf);
+            let (body,url,_,_)=wait_for_full_response(fetch).await.map_err(|e|Error::FetchError(format!("isolated source import {}: {}",e.url,e.error)))?;
+            if !matches!(ContentType::sniff(&body),ContentType::Swf){return Err(Error::FetchError("source import is not SWF/GFX".into()));}
+            let reused = player.lock().unwrap().mutate_with_update_context(|uc| {
+                let parent=importer_movie.fetch(uc);
+                let domain=uc.library.library_for_movie_mut(parent.movie()).avm2_domain();
+                let cached=uc.load_manager.1.iter().find(|(name, d, _)| name==&url && *d==domain).map(|(_,_,m)|*m);
+                if let Some(movie)=cached {
+                    parent.import_cached_exports(uc,movie);
+                    parent.finish_importing();
+                    true
+                } else { false }
+            });
+            if reused {return Ok(());}
+            let (child,is_as3)=player.lock().unwrap().mutate_with_update_context(|uc| -> Result<_, Error> {
+                let parent=importer_movie.fetch(uc);
+                let data=SwfMovieData::from_data(&body,url.clone(),Some(url.clone()),None).map_err(|e|Error::FetchError(format!("invalid prepared source movie: {e}")))?;
+                let movie=SwfMovie::new(uc.gc(),data);
+                let is_as3=movie.is_declared_action_script_3();
+                let clip=MovieClip::new_import_assets(uc,movie,parent);
+                if is_as3 {
+                    let domain=uc.library.library_for_movie_mut(parent.movie()).avm2_domain();
+                    uc.library.library_for_movie_mut(movie).set_avm2_domain(domain);
+                    clip.set_cur_preload_frame(1);
+                }else{uc.library.library_for_movie_mut(movie);clip.set_cur_preload_frame(0);}
+                Ok((MovieClipHandle::stash(uc,clip),is_as3))
+            })?;
+            let mut polls=0usize;
+            std::future::poll_fn(|cx|{
+                polls+=1;
+                if polls>4096{return std::task::Poll::Ready(Err(Error::FetchError("source import dependency poll budget".into())));}
+                let finished=player.lock().unwrap().mutate_with_update_context(|uc|{
+                    child.fetch(uc).preload(uc,&mut ExecutionLimit::with_max_ops_and_time(10000,Duration::from_millis(100)))
+                });
+                if finished{std::task::Poll::Ready(Ok(()))}else{cx.waker().wake_by_ref();std::task::Poll::Pending}
+            }).await?;
+            player.lock().unwrap().mutate_with_update_context(|uc|{
+                if is_as3{if let Err(e)=child.fetch(uc).run_abc_and_symbol_tags(uc,0){uc.log.avm_error(&format!("Private CAS AS3 asset initializer failed: {e:?}"));}}
+                if is_as3 {
+                    let parent=importer_movie.fetch(uc);
+                    let domain=uc.library.library_for_movie_mut(parent.movie()).avm2_domain();
+                    let movie=child.fetch(uc).movie();
+                    if !uc.load_manager.1.iter().any(|(name,d,_)|name==&url && *d==domain) {uc.load_manager.1.push((url.clone(),domain,movie));}
                 }
-                Err(e) => Err(Error::FetchError(format!(
-                    "Could not fetch: {:?} because {:?}",
-                    e.url, e.error
-                ))),
+                importer_movie.fetch(uc).finish_importing();
+            });
+            Ok(())
+            }.await;
+            if let Err(ref error)=result {
+                player.lock().unwrap().mutate_with_update_context(|uc| {
+                    uc.log.avm_error(&format!("Original source import failed: {error}"));
+                    importer_movie.fetch(uc).finish_importing();
+                });
             }
+            result
         })
     }
 

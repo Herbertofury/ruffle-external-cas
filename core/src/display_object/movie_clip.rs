@@ -175,6 +175,8 @@ pub struct MovieClipData<'gc> {
     // side and an AVM2 side simultaneously.
     object1: Lock<Option<Avm1Object<'gc>>>,
     object2: Lock<Option<Avm2StageObject<'gc>>>,
+    /// PlaceObject3 instance class must not mutate a shared source symbol.
+    instance_class: Lock<Option<Avm2ClassObject<'gc>>>,
 
     drop_target: Lock<Option<DisplayObject<'gc>>>,
 
@@ -247,6 +249,7 @@ impl<'gc> MovieClipData<'gc> {
             audio_stream: Cell::new(None),
             object1: Lock::new(None),
             object2: Lock::new(None),
+            instance_class: Lock::new(None),
             clip_event_handlers: OnceCell::new(),
             clip_event_flags: Cell::new(ClipEventFlag::empty()),
             flags: Cell::new(MovieClipFlags::empty()),
@@ -629,6 +632,20 @@ impl<'gc> MovieClip<'gc> {
             .preload_progress
             .awaiting_import
             .set(false);
+    }
+
+    pub(crate) fn import_cached_exports(self, context: &mut UpdateContext<'gc>, source: SwfMovie<'gc>) {
+        let exports=context.library.library_for_movie(source).map(|library|
+            library.export_characters().iter().filter_map(|(name,id)|
+                library.character_by_id(*id).map(|character|(name,character))).collect::<Vec<_>>()
+        ).unwrap_or_default();
+        for (name,character) in exports {
+            let library=context.library.library_for_movie_mut(self.movie());
+            if let Some(id)=library.character_id_by_import_name(&name) {
+                library.register_character(id,character);
+                MovieClipShared::register_export(context,id,name,self.movie());
+            }
+        }
     }
 
     #[inline]
@@ -1214,7 +1231,11 @@ impl<'gc> MovieClip<'gc> {
     }
 
     pub fn avm2_class(self) -> Option<Avm2ClassObject<'gc>> {
-        self.0.shared.get().avm2_class.get()
+        self.0.instance_class.get().or_else(||self.0.shared.get().avm2_class.get())
+    }
+
+    pub fn set_avm2_instance_class(self, mc: &Mutation<'gc>, class: Avm2ClassObject<'gc>) {
+        unlock!(Gc::write(mc,self.0),MovieClipData,instance_class).set(Some(class));
     }
 
     pub fn set_avm2_class(self, mc: &Mutation<'gc>, constr: Option<Avm2ClassObject<'gc>>) {
@@ -1513,9 +1534,51 @@ impl<'gc> MovieClip<'gc> {
         }
 
         let movie = self.movie();
-        let library = context.library.library_for_movie_mut(movie);
-        match library.instantiate_by_id(id, context.gc_context) {
+        let placement_class = if let Some(name) = &place_object.class_name {
+            let domain = context.library.library_for_movie_mut(movie).avm2_domain();
+            let mut activation = Avm2Activation::from_domain(context, domain);
+            let name = AvmString::new(activation.gc(), name.decode(UTF_8));
+            let qname = crate::avm2::QName::from_qualified_name(name, activation.context);
+            let class = match domain.get_defined_value(&mut activation, qname) {
+                Ok(Avm2Value::Object(object)) => object.as_class_object(),
+                Ok(_) => None,
+                Err(e) => {
+                    Avm2::uncaught_error(&mut activation, None, e, "Original GFx class-only placement failed");
+                    return None;
+                }
+            };
+            let Some(class) = class else {
+                activation.context.log.avm_error("Original class-only placement did not resolve to a Class");
+                return None;
+            };
+            Some(class)
+        } else {None};
+        let candidate = if place_object.action == swf::PlaceObjectAction::None {
+            let class=placement_class?;
+            let mut definition = Some(class.inner_class_definition());
+            let mut symbol = None;
+            while let Some(def) = definition {
+                if let Some(found) = context.library.avm2_class_registry().class_symbol(def) {
+                    symbol = Some(found);
+                    break;
+                }
+                definition = def.super_class();
+            }
+            let Some((source_movie, source_id)) = symbol else {
+                context.log.avm_error("Original class-only placement has no qualified source symbol; no empty visual substitute was created");
+                return None;
+            };
+            context.library.library_for_movie_mut(source_movie)
+                .instantiate_by_id(source_id, context.gc_context)
+        } else {
+            context.library.library_for_movie_mut(movie).instantiate_by_id(id, context.gc_context)
+        };
+        match candidate {
             Some(child) => {
+                if let Some(class)=placement_class {
+                    if let Some(clip)=child.as_movie_clip() {clip.set_avm2_instance_class(context.gc(),class);}
+                    else {context.log.avm_error("Source placement class override on non-MovieClip symbol is unqualified; source bytes retained");return None;}
+                }
                 // Remove previous child from children list,
                 // and add new child onto front of the list.
                 let prev_child = self.replace_at_depth(context, child, depth);
@@ -1842,6 +1905,11 @@ impl<'gc> MovieClip<'gc> {
                         child.set_place_frame(params.frame);
                     }
                 }
+                (PlaceObjectAction::None, _, _) if params.place_object.class_name.is_some() => {
+                    if let Some(child) = clip.instantiate_child(context, 0, params.depth(), &params.place_object) {
+                        child.set_place_frame(params.frame);
+                    }
+                }
                 _ => {
                     tracing::error!(
                         "Unexpected PlaceObject during goto: {:?}",
@@ -2091,7 +2159,7 @@ impl<'gc> MovieClip<'gc> {
         context: &mut UpdateContext<'gc>,
         display_object: DisplayObject<'gc>,
     ) {
-        let class_object = self.0.shared.get().avm2_class.get();
+        let class_object = self.avm2_class();
         let class_object = class_object.unwrap_or_else(|| context.avm2.classes().movieclip);
 
         let object =
@@ -2107,7 +2175,7 @@ impl<'gc> MovieClip<'gc> {
     /// intended to be called from `post_instantiate`.
     #[inline(never)]
     fn construct_as_avm2_object(self, context: &mut UpdateContext<'gc>) {
-        let class_object = self.0.shared.get().avm2_class.get();
+        let class_object = self.avm2_class();
         let class_object = class_object.unwrap_or_else(|| context.avm2.classes().movieclip);
 
         if let Some(object) = self.0.object2.get() {
@@ -4321,7 +4389,7 @@ impl<'gc, 'a> MovieClip<'gc> {
     //
     // We need to match this behavior exactly, in order for flascc/crossbridge games like 'minidash'
     // to work correctly.
-    fn run_abc_and_symbol_tags(
+    pub(crate) fn run_abc_and_symbol_tags(
         self,
         context: &mut UpdateContext<'gc>,
         current_frame: FrameNumber,
@@ -4493,7 +4561,9 @@ impl<'gc, 'a> MovieClip<'gc> {
                     child.apply_place_object(context, &place_object);
                 }
             }
-            // Rejected by `read_place_object`.
+            PlaceObjectAction::None if place_object.class_name.is_some() => {
+                self.instantiate_child(context, 0, place_object.depth.into(), &place_object);
+            }
             PlaceObjectAction::None => {}
         }
 
@@ -4837,7 +4907,7 @@ fn read_place_object<'a>(
     } else {
         reader.read_place_object_2_or_3(version)
     }?;
-    if place_object.action == swf::PlaceObjectAction::None {
+    if place_object.action == swf::PlaceObjectAction::None && place_object.class_name.is_none() {
         // TODO How does Flash handle this?
         // Quick testing shows that it's either ignored or the movie is halted
         // depending on whether the depth is occupied. It appears that a warning

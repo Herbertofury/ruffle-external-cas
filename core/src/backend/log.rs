@@ -2,6 +2,9 @@ pub trait LogBackend {
     fn avm_trace(&self, message: &str);
 
     fn avm_warning(&self, message: &str);
+
+    /// Host-visible VM failure; existing backends retain their warning route.
+    fn avm_error(&self, message: &str) { self.avm_warning(message); }
 }
 
 /// Logging backend that just reroutes traces to the log crate

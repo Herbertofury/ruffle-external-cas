@@ -1993,9 +1993,14 @@ impl<W: Write> Writer<W> {
                 }
             }
 
+            has_wide_offsets |= shape_buf.len().saturating_add((num_glyphs + 1) * 2) > 0xFFFF;
+
             let mut writer = Writer::new(&mut buf, self.version);
             writer.write_character_id(font.id)?;
-            writer.write_u8(font.flags.bits())?;
+            let mut actual_flags = font.flags;
+            actual_flags.set(FontFlag::HAS_WIDE_OFFSETS, has_wide_offsets);
+            actual_flags.set(FontFlag::HAS_WIDE_CODES, has_wide_codes);
+            writer.write_u8(actual_flags.bits())?;
             writer.write_language(font.language)?;
             writer.write_u8(font.name.len() as u8)?;
             writer.output.write_all(font.name.as_bytes())?;

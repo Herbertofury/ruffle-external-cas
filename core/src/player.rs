@@ -2603,6 +2603,14 @@ impl Player {
         })
     }
 
+    /// Source GFx public missing-read compatibility, never a normal Flash default.
+    pub fn set_source_gfx_soft_public_reads(&mut self,enabled:bool){
+        self.mutate_with_update_context(|context|context.avm2.source_gfx_soft_public_reads=enabled);
+    }
+    /// Opt-in source-GFx class initialization, never a normal Flash default.
+    pub fn set_source_gfx_early_class_publication(&mut self,enabled:bool){
+        self.mutate_with_update_context(|context|context.avm2.source_gfx_early_class_publication=enabled);
+    }
     pub fn spoofed_url(&self) -> Option<&str> {
         self.spoofed_url.as_deref()
     }

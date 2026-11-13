@@ -122,8 +122,30 @@ impl<'gc> ClassObject<'gc> {
 
         class_object.bind_methods(activation)?;
         class_object.validate_class(activation)?;
-        class_object.run_class_initializer(activation)?;
-
+        // Source GFx experiment: publish the actual class identity into its
+        // original global class slot before cinit callbacks can reenter it.
+        // No script bytes, fields, defaults or errors are replaced. Normal Flash
+        // behavior is unchanged and a failed initializer restores the old slot.
+        let mut published=None;
+        if activation.avm2().source_gfx_early_class_publication {
+            let name=class.name();
+            let multiname=Multiname::from(name);
+            if let Some((_,script))=activation.domain().get_defining_script(&multiname) {
+                let globals=script.globals(activation.context)?;
+                if let Some(Property::ConstSlot{slot_id})=globals.vtable().get_trait(&multiname) {
+                    let previous=globals.get_slot(slot_id);
+                    if matches!(previous,Value::Null|Value::Undefined) {
+                        globals.base().set_slot(slot_id,class_object.into(),activation.gc());
+                        published=Some((globals,slot_id,previous));
+                    }
+                }
+            }
+        }
+        let result=class_object.run_class_initializer(activation);
+        if result.is_err() {
+            if let Some((globals,slot,previous))=published {globals.base().set_slot(slot,previous,activation.gc());}
+        }
+        result?;
         Ok(class_object)
     }
 

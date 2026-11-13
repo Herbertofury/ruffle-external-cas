@@ -219,7 +219,7 @@ impl<'gc> ScriptObjectWrapper<'gc> {
             // Special case: Unresolvable properties on dynamic classes are treated
             // as dynamic properties that have not yet been set, and yield
             // `undefined`
-            if self.is_sealed() {
+            if self.is_sealed() && !(activation.avm2().source_gfx_soft_public_reads && multiname.valid_dynamic_name()) {
                 Err(error::make_reference_error(
                     activation,
                     error::ReferenceErrorCode::InvalidRead,

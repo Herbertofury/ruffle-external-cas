@@ -37,3 +37,29 @@ The own-source ExcessArgsFixture compares the same bytes in both modes and
 retains strict 1063, missing 1063, coercion 1034, native 1063 and rest semantics.
 Eight adapter VM fixtures passed before this source-only promotion. No private
 depth guard, native binary, installed script or game asset is included.
+
+
+A fourth explicit source-profile switch,
+`set_source_gfx_loader_content_detach(true)`, permits only transferring a
+Loader's exposed original content out of that Loader, and returning that same
+detached content to its own empty Loader before original replacement cleanup.
+Unknown children, another Loader, wrong parent, addChildAt, removeChildAt and
+setChildIndex retain 2069. The ordinary/default Loader path stays unchanged.
+The source ImageLoader/AssetLoader call this sequence; their scripts are not
+patched, bundled or redistributed here. This qualifies the observed source
+contract, not an assertion that all Scaleform Loader behavior is implemented.
+
+An optional ExternalInterfaceProvider bitmap observer defaults disabled. For
+an explicitly observed bitmap only, it attempts fallible renderer registration
+and reports before/after the original COMPLETE handlers. Upload errors are
+reported separately. The observer never calls back into AVM2. The host may use
+this boundary to invoke original source completion after returning from the VM;
+fetch resolution alone is not a completion signal.
+
+Own GPU fixtures checked default 2069, seven forbidden mutation cases, exact
+RGBA pixels, successful own-content return and withheld native completion when
+the original COMPLETE handler throws. A private, read-only installed component
+check ran unchanged original AssetLoader and ImageLoader through initial load
+and replacement: two source COMPLETE events, one final child, zero VM errors,
+and source DDS versus GPU premultiplied pixels within one byte per channel.
+No original game asset, source script or native binary is included in this fork.

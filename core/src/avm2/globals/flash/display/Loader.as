@@ -39,7 +39,12 @@ package flash.display {
             stub_method("flash.display.Loader", "close");
         }
 
+        private native function sourceGfxReturnContent(child:DisplayObject):Boolean;
+
         override public function addChild(child:DisplayObject):DisplayObject {
+            if (this.sourceGfxReturnContent(child)) {
+                return child;
+            }
             throw new IllegalOperationError("Error #2069: The Loader class does not implement this method.", 2069);
         }
 
@@ -47,7 +52,12 @@ package flash.display {
             throw new IllegalOperationError("Error #2069: The Loader class does not implement this method.", 2069);
         }
 
+        private native function sourceGfxDetachContent(child:DisplayObject):Boolean;
+
         override public function removeChild(child:DisplayObject):DisplayObject {
+            if (this.sourceGfxDetachContent(child)) {
+                return child;
+            }
             throw new IllegalOperationError("Error #2069: The Loader class does not implement this method.", 2069);
         }
 

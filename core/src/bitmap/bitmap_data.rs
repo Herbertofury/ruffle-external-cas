@@ -278,6 +278,16 @@ impl<'gc> BitmapData<'gc> {
         self.0.bitmap_handle(gc_context, renderer)
     }
 
+    /// Fallible explicit registration for a native host that must acknowledge
+    /// actual renderer readiness before completing a source image request.
+    pub fn try_bitmap_handle(
+        &self,
+        gc_context: &Mutation<'gc>,
+        renderer: &mut dyn RenderBackend,
+    ) -> Result<BitmapHandle, ruffle_render::error::Error> {
+        self.0.try_bitmap_handle(gc_context, renderer)
+    }
+
     pub fn overwrite_cpu_pixels_from_gpu(
         &self,
         mc: &Mutation<'gc>,
@@ -557,6 +567,16 @@ mod wrapper {
             let mut bitmap_data = self.0.borrow_mut(gc_context);
             bitmap_data.update_dirty_texture(renderer);
             bitmap_data.bitmap_handle(renderer)
+        }
+
+        pub fn try_bitmap_handle(
+            &self,
+            gc_context: &Mutation<'gc>,
+            renderer: &mut dyn RenderBackend,
+        ) -> Result<BitmapHandle, ruffle_render::error::Error> {
+            let mut bitmap_data = self.0.borrow_mut(gc_context);
+            bitmap_data.update_dirty_texture(renderer);
+            bitmap_data.try_bitmap_handle(renderer)
         }
 
         /// Provides access to the underlying `BitmapData`.

@@ -332,3 +332,91 @@ pub fn unload<'gc>(
 
     Ok(Value::Undefined)
 }
+
+/// Narrow opt-in source-GFx detach. Unknown children, hidden/unloaded content,
+/// different parents and every ordinary Flash Loader retain error 2069 in the
+/// original builtin wrapper. Actual removal uses the existing validated path.
+pub fn source_gfx_detach_content<'gc>(
+    activation: &mut Activation<'_, 'gc>,
+    this: Value<'gc>,
+    args: FunctionArgs<'_, 'gc>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    use crate::display_object::{DisplayObject, TDisplayObject};
+    if !activation.avm2().source_gfx_loader_content_detach {
+        return Ok(false.into());
+    }
+    let object = this.as_object().expect("Loader receiver");
+    let loader_info = object
+        .get_slot(loader_slots::_CONTENT_LOADER_INFO)
+        .as_object()
+        .and_then(|o| o.as_loader_info_object())
+        .expect("LoaderInfo");
+    if !loader_info.expose_content() {
+        return Ok(false.into());
+    }
+    let Some(child) = args.try_get_object(0).and_then(|o| o.as_display_object()) else {
+        return Ok(false.into());
+    };
+    let content = match loader_info.loader_stream() {
+        LoaderStream::Swf(_, content) => Some(content),
+        LoaderStream::NotYetLoaded(_, content, _) => content,
+    };
+    let Some(content) = content else {
+        return Ok(false.into());
+    };
+    let Some(parent) = object.as_display_object() else {
+        return Ok(false.into());
+    };
+    if !DisplayObject::ptr_eq(child, content)
+        || !child
+            .parent()
+            .is_some_and(|p| DisplayObject::ptr_eq(p, parent))
+    {
+        return Ok(false.into());
+    }
+    super::display_object_container::remove_child(activation, this, args)?;
+    Ok(true.into())
+}
+
+/// Return a detached original content object to its own empty Loader, as used
+/// by source image replacement cleanup immediately before Loader.unload().
+pub fn source_gfx_return_content<'gc>(
+    activation: &mut Activation<'_, 'gc>,
+    this: Value<'gc>,
+    args: FunctionArgs<'_, 'gc>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    use crate::display_object::{DisplayObject, TDisplayObject, TDisplayObjectContainer};
+    if !activation.avm2().source_gfx_loader_content_detach {
+        return Ok(false.into());
+    }
+    let object = this.as_object().expect("Loader receiver");
+    let loader_info = object
+        .get_slot(loader_slots::_CONTENT_LOADER_INFO)
+        .as_object()
+        .and_then(|o| o.as_loader_info_object())
+        .expect("LoaderInfo");
+    if !loader_info.expose_content() {
+        return Ok(false.into());
+    }
+    let Some(child) = args.try_get_object(0).and_then(|o| o.as_display_object()) else {
+        return Ok(false.into());
+    };
+    let content = match loader_info.loader_stream() {
+        LoaderStream::Swf(_, content) => Some(content),
+        LoaderStream::NotYetLoaded(_, content, _) => content,
+    };
+    let Some(content) = content else {
+        return Ok(false.into());
+    };
+    let Some(parent) = object.as_display_object().and_then(|d| d.as_container()) else {
+        return Ok(false.into());
+    };
+    if !DisplayObject::ptr_eq(child, content)
+        || child.parent().is_some()
+        || parent.num_children() != 0
+    {
+        return Ok(false.into());
+    }
+    super::display_object_container::add_child(activation, this, args)?;
+    Ok(true.into())
+}

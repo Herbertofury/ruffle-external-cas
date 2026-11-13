@@ -2218,7 +2218,30 @@ impl<'gc> MovieLoader<'gc> {
                 if let Some(dobj) = dobj
                     && dobj.as_movie_clip().is_none()
                 {
+                    // Native source image brokers can require actual renderer
+                    // registration followed by the original COMPLETE handlers.
+                    // Observation is disabled by default and never re-enters AVM2.
+                    let observed = if let Some(bitmap) = dobj.as_bitmap() {
+                        let url = current_movie.url().to_owned();
+                        if uc.external_interface.observe_bitmap_load(&url) {
+                            let data = bitmap.bitmap_data();
+                            let dimensions = [data.width(), data.height()];
+                            match data.try_bitmap_handle(uc.gc_context, uc.renderer) {
+                                Ok(_) => {
+                                    uc.external_interface.bitmap_load_event(&url, crate::external::BitmapLoadEvent::BeforeScriptComplete { dimensions });
+                                    Some((url, dimensions))
+                                }
+                                Err(error) => {
+                                    uc.external_interface.bitmap_load_event(&url, crate::external::BitmapLoadEvent::UploadFailed { reason: error.to_string() });
+                                    None
+                                }
+                            }
+                        } else { None }
+                    } else { None };
                     loader_info.fire_init_and_complete_events(uc, status, redirected);
+                    if let Some((url, dimensions)) = observed {
+                        uc.external_interface.bitmap_load_event(&url, crate::external::BitmapLoadEvent::AfterScriptComplete { dimensions });
+                    }
                 }
             }
         }

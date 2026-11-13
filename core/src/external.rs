@@ -385,7 +385,20 @@ impl FsCommandProvider for NullFsCommandProvider {
     }
 }
 
+/// Optional native-host observation of an actual decoded/uploaded AVM2 bitmap.
+/// Callbacks may record state only; they must not re-enter this Player.
+#[derive(Clone, Debug)]
+pub enum BitmapLoadEvent {
+    BeforeScriptComplete { dimensions: [u32; 2] },
+    AfterScriptComplete { dimensions: [u32; 2] },
+    UploadFailed { reason: String },
+}
+
 pub trait ExternalInterfaceProvider {
+    /// False by default: ordinary Flash loading and renderer timing stay unchanged.
+    fn observe_bitmap_load(&self, _url: &str) -> bool { false }
+    fn on_bitmap_load_event(&self, _url: &str, _event: BitmapLoadEvent) {}
+
     fn call_method(&self, context: &mut UpdateContext<'_>, name: &str, args: &[Value]) -> Value;
 
     fn on_callback_available(&self, name: &str);
@@ -462,6 +475,13 @@ impl<'gc> ExternalInterface<'gc> {
         } else {
             Value::Undefined
         }
+    }
+
+    pub fn observe_bitmap_load(&self, url: &str) -> bool {
+        self.provider.as_ref().is_some_and(|provider| provider.observe_bitmap_load(url))
+    }
+    pub fn bitmap_load_event(&self, url: &str, event: BitmapLoadEvent) {
+        if let Some(provider) = &self.provider { provider.on_bitmap_load_event(url, event); }
     }
 
     pub fn available(&self) -> bool {

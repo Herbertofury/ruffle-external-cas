@@ -191,6 +191,10 @@ pub struct Avm2<'gc> {
     pub source_gfx_drop_excess_as3_args: bool,
     #[collect(require_static)]
     pub source_gfx_loader_content_detach: bool,
+    /// Source SpriteDef label helper accepts a missing label without a scene.
+    /// The undefined native target frame uses an explicit retain-frame policy.
+    #[collect(require_static)]
+    pub source_gfx_missing_label_no_scene: bool,
     /// Explicit native-source recursion budget; ordinary Flash defaults None.
     pub source_gfx_max_call_depth: Option<u16>,
     #[collect(require_static)]
@@ -246,6 +250,7 @@ impl<'gc> Avm2<'gc> {
             source_gfx_soft_public_reads: false,
             source_gfx_drop_excess_as3_args: false,
             source_gfx_loader_content_detach: false,
+            source_gfx_missing_label_no_scene: false,
             source_gfx_max_call_depth: None,
             source_gfx_call_depth: std::rc::Rc::new(std::cell::Cell::new(0)),
         }

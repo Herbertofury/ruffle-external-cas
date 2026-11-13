@@ -2616,6 +2616,13 @@ impl Player {
     pub fn set_source_gfx_drop_excess_as3_args(&mut self,enabled:bool) {
         self.mutate_with_update_context(|context|context.avm2.source_gfx_drop_excess_as3_args=enabled);
     }
+    /// Opt-in native-source continuation for missing String labels on a
+    /// nested SpriteDef with no explicit scene. Native target-frame state is
+    /// undefined: this adapter retains the current frame and emits an audit
+    /// warning for every occurrence. Ordinary Flash defaults remain strict.
+    pub fn set_source_gfx_missing_label_no_scene(&mut self, enabled: bool) {
+        self.mutate_with_update_context(|context| context.avm2.source_gfx_missing_label_no_scene = enabled);
+    }
     /// Explicit source-GFx removal of the actual exposed Loader content only.
     /// Ordinary Loader mutation remains unavailable by default.
     pub fn set_source_gfx_loader_content_detach(&mut self,enabled:bool) {

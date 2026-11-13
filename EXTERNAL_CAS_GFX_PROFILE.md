@@ -82,3 +82,26 @@ native stack bytes in the own fixture and 343,392 in the actual unresolved CAS
 trial-data cycle. The latter survived 120 frames while retaining its UI-loading
 and source-error state. No diagnostic guard, tracing or original asset is copied
 into this checkpoint. Fixing each missing source host contract remains required.
+
+An additional, narrowly selected source-profile switch,
+`Player::set_source_gfx_missing_label_no_scene(true)`, permits native-source
+continuation for a missing String frame label on a nested SpriteDef with no
+explicit scene. Ordinary Flash stays strict; valid and numeric targets,
+explicit scenes, non-String coercions and root/dynamic clips keep their paths.
+
+Read-only isolated execution of the installed native label/scene helper and
+its actual lookup/scene kernels covered 15 cases and 5,709 original instructions.
+The native helper ignores a failed lookup and accepts the no-scene SpriteDef
+case. The failed lookup leaves its caller out-frame unchanged. This proves
+acceptance and continuation, not a deterministic target frame: the native
+caller has no observed initializer for that stack value.
+
+The adapter explicitly retains the current frame and honors the requested
+Play/Stop mode. Each occurrence emits the warning marker
+`SOURCE_GFX_UNQUALIFIED_MISSING_LABEL_FRAME_POLICY`, including retained frame
+and `native_target_frame=undefined`. The host must retain a policy counter and
+keep visual fidelity unqualified. No source label is renamed, no original
+script is patched, and no widget visibility or lifecycle completion is forced.
+The External CAS own two-frame fixture checks strict 2109, uncaught failure,
+continued source execution, stable-frame policy, playback mode, unaffected
+valid/numeric/explicit-scene/object/dynamic cases and disabling the profile.

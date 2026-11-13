@@ -8,7 +8,7 @@ use crate::avm2::function::FunctionArgs;
 use crate::avm2::object::ArrayObject;
 use crate::avm2::parameters::ParametersExt;
 use crate::avm2::value::Value;
-use crate::display_object::{GotoInfo, MovieClip, Scene, StopOrPlay};
+use crate::display_object::{GotoInfo, MovieClip, Scene, StopOrPlay, TDisplayObject};
 use crate::string::{AvmString, WString};
 
 /// Implements `addFrameScript`, an undocumented method of `MovieClip` used to
@@ -396,6 +396,10 @@ pub fn goto_frame<'gc>(
     scene_str: Option<AvmString<'gc>>,
     stop_or_play: StopOrPlay,
 ) -> Result<(), Error<'gc>> {
+    let source_label_policy = activation.context.avm2.source_gfx_missing_label_no_scene
+        && scene_str.is_none()
+        && mc.id() != 0
+        && matches!(frame_or_label, Value::String(_));
     let scene = match scene_str {
         None => mc
             .current_scene()
@@ -432,6 +436,21 @@ pub fn goto_frame<'gc>(
 
                 let frame = mc.frame_label_to_number(&frame_or_label, activation.context);
 
+                if frame.is_none() && source_label_policy {
+                    activation.context.log.avm_warning(&format!(
+                        "SOURCE_GFX_UNQUALIFIED_MISSING_LABEL_FRAME_POLICY label={:?} character_id={} retained_frame={} policy=retain-current-frame native_target_frame=undefined",
+                        frame_or_label, mc.id(), mc.current_frame()
+                    ));
+                    // Native SpriteDef/no-scene lookup accepts a miss but does
+                    // not initialize its out-frame. Never mirror undefined
+                    // stack data or invent a label/target frame. Preserve the
+                    // current frame while honoring the requested playback mode.
+                    match stop_or_play {
+                        StopOrPlay::Play => mc.play(),
+                        StopOrPlay::Stop => mc.stop(activation.context),
+                    }
+                    return Ok(());
+                }
                 if activation.caller_movie_or_root().version() >= 11 {
                     if let Some(frame) = frame {
                         frame as i32

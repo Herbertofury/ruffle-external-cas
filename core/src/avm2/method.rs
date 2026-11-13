@@ -156,6 +156,30 @@ impl core::fmt::Debug for Method<'_> {
 }
 
 impl<'gc> Method<'gc> {
+    /// Native host Function metadata. A variadic builtin supplies only the
+    /// standard Function calling convention; no user ABC body is replaced.
+    pub fn host_native_from_template(
+        self,
+        implementation: NativeMethodImpl,
+        activation: &mut Activation<'_, 'gc>,
+    ) -> Option<Self> {
+        let template=self;
+        if !template.is_variadic() { return None; }
+        Some(Self(Gc::new(activation.gc(), MethodData {
+            txunit: template.0.txunit,
+            abc: template.0.abc.clone(),
+            abc_method: template.0.abc_method,
+            abc_method_body: None,
+            method_kind: MethodKind::Native { native_method: implementation, fast_call: false },
+            signature: Vec::new(),
+            return_type: None,
+            resolved_info: OnceLock::new(),
+            association: OnceLock::new(),
+            is_function: true,
+            is_unchecked: true,
+        })))
+    }
+
     /// Construct a `Method` from an `AbcFile` and method index.
     pub fn from_method_index(
         txunit: TranslationUnit<'gc>,

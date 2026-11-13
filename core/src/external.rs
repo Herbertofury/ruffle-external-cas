@@ -57,6 +57,32 @@ impl From<bool> for Value {
     }
 }
 
+/// Native GFx FunctionHandler seam. Its caller explicitly supplies the host
+/// bridge identifier; this is not an invented original game-service name.
+pub(crate) fn invoke_bound_host_function<'gc>(
+    activation: &mut Avm2Activation<'_, 'gc>,
+    receiver: Avm2Value<'gc>,
+    args: FunctionArgs<'_, 'gc>,
+) -> Result<Avm2Value<'gc>, Avm2Error<'gc>> {
+    let key=AvmString::new_utf8(activation.gc(),"__external_cas_host_bridge");
+    let bridge=receiver.get_public_property(key,activation)?.coerce_to_string(activation)?.to_string();
+    let key=AvmString::new_utf8(activation.gc(),"__external_cas_host_projection");
+    let projection=receiver.get_public_property(key,activation)?.coerce_to_string(activation)?.to_string();
+    let args=args.iter().enumerate().map(|(i,v)| {
+        if i==0 && !projection.is_empty() {
+            let mut values=BTreeMap::new();
+            for field in projection.split('\0') {
+                let key=AvmString::new_utf8(activation.gc(),field);
+                let value=v.get_public_property(key,activation)?;
+                values.insert(field.into(),Value::from_avm2(activation,value)?);
+            }
+            Ok(Value::Object(values))
+        } else {Value::from_avm2(activation,v)}
+    }).collect::<Result<Vec<_>,Avm2Error<'gc>>>()?;
+    let result=ExternalInterface::call_method(activation.context,&bridge,&args);
+    Ok(result.into_avm2(activation.context))
+}
+
 impl From<f64> for Value {
     fn from(value: f64) -> Self {
         Value::Number(value)

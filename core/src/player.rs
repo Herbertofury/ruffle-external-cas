@@ -2489,6 +2489,120 @@ impl Player {
         })
     }
 
+    /// Bind an actual source static Function slot to the native host, as a GFx
+    /// FunctionHandler would. Original ABC/art/layout remain unchanged. Existing
+    /// source functions are never silently overwritten.
+    pub fn bind_avm2_static_host_function(
+        &mut self, class_name: &str, member: &str, host_bridge: &str,
+    ) -> Result<(), String> {
+        self.bind_avm2_static_host_function_projected(class_name,member,host_bridge,&[])
+    }
+    /// Project explicitly named fields of the first native argument while still
+    /// retaining all other nonplain objects as opaque identities. This is a
+    /// host ABI descriptor, not generic lossy object serialization.
+    pub fn bind_avm2_static_host_function_projected(
+        &mut self,class_name:&str,member:&str,host_bridge:&str,fields:&[&str],
+    )->Result<(),String>{
+        if fields.len()>32 || fields.iter().any(|s|s.is_empty()||s.contains('\0')) { return Err("invalid source native argument projection".into()); }
+        self.mutate_with_update_context(|context| {
+            let domain=context.library.library_for_movie(*context.root_swf)
+                .ok_or("root source library is not ready")?.avm2_domain();
+            let mut activation=Avm2Activation::from_domain(context,domain);
+            let result=(|| -> Result<(),crate::avm2::Error<'_>> {
+                use crate::avm2::object::{FunctionObject,ScriptObject,TObject};
+                let name=AvmString::new_utf8(activation.gc(),class_name);
+                let qname=crate::avm2::QName::from_qualified_name(name,activation.context);
+                let target=domain.get_defined_value(&mut activation,qname)?;
+                let member=AvmString::new_utf8(activation.gc(),member);
+                let object=target.as_object().ok_or("source native Function owner is not an object")?;
+                let multiname=crate::avm2::Multiname::new(activation.avm2().find_public_namespace(),member);
+                let Some(crate::avm2::property::Property::Slot{slot_id})=object.vtable().get_trait(&multiname) else {return Err("source native binding requires a declared writable Function slot".into());};
+                if object.vtable().slot_class_name(&mut activation.context.strings,slot_id).to_utf8_lossy()!="Function" {return Err("source native binding slot is not typed Function".into());}
+                let current=target.get_public_property(member,&mut activation)?;
+                if !matches!(current,crate::avm2::Value::Null|crate::avm2::Value::Undefined){return Err("source native Function slot is already bound".into());}
+                let prototype=activation.avm2().classes().function.prototype();
+                let call=crate::avm2::Value::Object(prototype).get_public_property(AvmString::new_utf8(activation.gc(),"call"),&mut activation)?;
+                let template=call.as_object().and_then(|o|o.as_function_object()).ok_or("builtin Function.call is unavailable")?.executable().as_method();
+                let method=template.host_native_from_template(crate::external::invoke_bound_host_function,&mut activation).ok_or("native host Function template is not variadic")?;
+                let binding=ScriptObject::new_object(activation.context);
+                let key=AvmString::new_utf8(activation.gc(),"__external_cas_host_bridge");
+                binding.set_dynamic_property(key,crate::avm2::Value::String(AvmString::new_utf8(activation.gc(),host_bridge)),activation.gc());
+                binding.set_local_property_is_enumerable(activation.gc(),key,false);
+                let projection=AvmString::new_utf8(activation.gc(),"__external_cas_host_projection");
+                binding.set_dynamic_property(projection,crate::avm2::Value::String(AvmString::new_utf8(activation.gc(),fields.join("\0"))),activation.gc());
+                binding.set_local_property_is_enumerable(activation.gc(),projection,false);
+                let scope=activation.create_scopechain();
+                let function=FunctionObject::from_method(activation.context,method,scope,Some(binding.into()),None);
+                target.set_public_property(member,function.into(),&mut activation)?;
+                Ok(())
+            })();
+            result.map_err(|e|e.to_string(&mut activation))
+        })
+    }
+
+    /// Construct an original script class; the returned opaque identity retains
+    /// the actual VM instance and its class fields rather than serializing it.
+    pub fn construct_avm2_script_class(&mut self,class_name:&str,args:Vec<ExternalValue>)->Result<ExternalValue,String>{
+        self.mutate_with_update_context(|context|{
+            let domain=context.library.library_for_movie(*context.root_swf).ok_or("root source library is not ready")?.avm2_domain();
+            let mut activation=Avm2Activation::from_domain(context,domain);
+            let result=(||->Result<_,crate::avm2::Error<'_>>{
+                let name=AvmString::new_utf8(activation.gc(),class_name);
+                let qname=crate::avm2::QName::from_qualified_name(name,activation.context);
+                let target=domain.get_defined_value(&mut activation,qname)?;
+                let class=target.as_object().and_then(|o|o.as_class_object()).ok_or("source definition is not a Class")?;
+                let args=args.into_iter().map(|a|a.into_avm2(activation.context)).collect::<Vec<_>>();
+                let value=class.construct(&mut activation,&args)?;
+                Ok(ExternalValue::Avm2Handle(activation.context.external_interface.retain_avm2_value(value)))
+            })();result.map_err(|e|e.to_string(&mut activation))
+        })
+    }
+
+    pub fn retain_avm2_root_object(&mut self)->Result<ExternalValue,String>{
+        self.mutate_with_update_context(|context|{
+            let object=context.stage.root_clip().ok_or("source root display is not ready")?.object2().ok_or("source root script instance is not ready")?;
+            Ok(ExternalValue::Avm2Handle(context.external_interface.retain_avm2_value(object.into())))
+        })
+    }
+
+    pub fn get_retained_avm2_property(&mut self,id:u64,name:&str)->Result<ExternalValue,String>{
+        self.mutate_with_update_context(|context|{
+            let domain=context.library.library_for_movie(*context.root_swf).ok_or("source root library is not ready")?.avm2_domain();
+            let value=context.external_interface.retained_avm2_value(id).ok_or("unknown source VM handle")?;
+            let mut activation=Avm2Activation::from_domain(context,domain);
+            let key=AvmString::new_utf8(activation.gc(),name);
+            let result=value.get_public_property(key,&mut activation).and_then(|v|ExternalValue::from_avm2(&mut activation,v));
+            result.map_err(|e|e.to_string(&mut activation))
+        })
+    }
+
+    pub fn set_retained_avm2_property(&mut self,id:u64,name:&str,value:ExternalValue)->Result<(),String>{
+        self.mutate_with_update_context(|context|{
+            let domain=context.library.library_for_movie(*context.root_swf).ok_or("source root library is not ready")?.avm2_domain();
+            let target=context.external_interface.retained_avm2_value(id).ok_or("unknown source VM handle")?;
+            let value=value.into_avm2(context);
+            let mut activation=Avm2Activation::from_domain(context,domain);
+            let key=AvmString::new_utf8(activation.gc(),name);
+            target.set_public_property(key,value,&mut activation).map_err(|e|e.to_string(&mut activation))
+        })
+    }
+
+    pub fn call_retained_avm2_method(&mut self,id:u64,name:&str,args:Vec<ExternalValue>)->Result<ExternalValue,String>{
+        self.mutate_with_update_context(|context|{
+            let domain=context.library.library_for_movie(*context.root_swf).ok_or("source root library is not ready")?.avm2_domain();
+            let receiver=context.external_interface.retained_avm2_value(id).ok_or("unknown source VM handle")?;
+            let mut activation=Avm2Activation::from_domain(context,domain);
+            let result=(||->Result<_,crate::avm2::Error<'_>>{
+                let key=AvmString::new_utf8(activation.gc(),name);
+                let value=receiver.get_public_property(key,&mut activation)?;
+                let function=value.as_object().and_then(|o|o.as_function_object()).ok_or("source member is not a Function")?;
+                let args=args.into_iter().map(|a|a.into_avm2(activation.context)).collect::<Vec<_>>();
+                let result=function.call(&mut activation,receiver,crate::avm2::FunctionArgs::from_slice(&args))?;
+                ExternalValue::from_avm2(&mut activation,result)
+            })();result.map_err(|e|e.to_string(&mut activation))
+        })
+    }
+
     pub fn spoofed_url(&self) -> Option<&str> {
         self.spoofed_url.as_deref()
     }

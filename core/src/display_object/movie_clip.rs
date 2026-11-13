@@ -1444,16 +1444,16 @@ impl<'gc> MovieClip<'gc> {
                     self.remove_object(context, reader, 2)
                 }
                 TagCode::PlaceObject if run_display_actions && is_action_script_3 => {
-                    self.queue_place_object(reader, 1)
+                    self.queue_place_object(context, reader, 1)
                 }
                 TagCode::PlaceObject2 if run_display_actions && is_action_script_3 => {
-                    self.queue_place_object(reader, 2)
+                    self.queue_place_object(context, reader, 2)
                 }
                 TagCode::PlaceObject3 if run_display_actions && is_action_script_3 => {
-                    self.queue_place_object(reader, 3)
+                    self.queue_place_object(context, reader, 3)
                 }
                 TagCode::PlaceObject4 if run_display_actions && is_action_script_3 => {
-                    self.queue_place_object(reader, 4)
+                    self.queue_place_object(context, reader, 4)
                 }
                 TagCode::RemoveObject if run_display_actions && is_action_script_3 => {
                     self.queue_remove_object(reader, 1)
@@ -1801,6 +1801,7 @@ impl<'gc> MovieClip<'gc> {
                         self.0.goto_place_object(
                             reader,
                             version,
+                            context,
                             &mut goto_commands,
                             is_rewind,
                             index,
@@ -1870,6 +1871,7 @@ impl<'gc> MovieClip<'gc> {
                 let new_tag = QueuedTag {
                     tag_type: QueuedTagAction::Place(params.version),
                     tag_start: params.tag_start,
+                    source_gfx_tag_len: params.source_gfx_tag_len,
                 };
                 let mut queued_tags = self.0.queued_tags.borrow_mut();
                 let bucket = queued_tags
@@ -2636,6 +2638,12 @@ impl<'gc> TDisplayObject<'gc> for MovieClip<'gc> {
 
             for (_, tag) in place_actions {
                 let mut reader = data.read_from(tag.tag_start);
+                // Replaying a previously accepted malformed source tag must
+                // not borrow the next SWF tag's first byte as visibility.
+                if let Some(len) = tag.source_gfx_tag_len {
+                    if len > reader.get_ref().len() { continue; }
+                    *reader.get_mut() = &reader.get_ref()[..len];
+                }
                 let version = match tag.tag_type {
                     QueuedTagAction::Place(v) => v,
                     _ => unreachable!(),
@@ -3479,6 +3487,7 @@ impl<'gc> MovieClipData<'gc> {
         &self,
         reader: &mut SwfStream<'a>,
         version: u8,
+        context: &mut UpdateContext<'gc>,
         goto_commands: &mut Vec<GotoPlaceObject<'a>>,
         is_rewind: bool,
         index: usize,
@@ -3486,7 +3495,8 @@ impl<'gc> MovieClipData<'gc> {
         let swf_ptr = self.shared.get().swf_data.as_ref().as_ptr();
         let tag_ptr = reader.get_ref().as_ptr();
         let tag_start = (tag_ptr.addr() - swf_ptr.addr()) as u64;
-        let place_object = read_place_object(reader, version)?;
+        let source_tag_len = reader.get_ref().len();
+        let (place_object, missing_visibility) = read_place_object(reader, version, context)?;
 
         // We merge the deltas from this PlaceObject with the previous command.
         let depth: Depth = place_object.depth.into();
@@ -3497,6 +3507,7 @@ impl<'gc> MovieClipData<'gc> {
             index,
             tag_start,
             version,
+            missing_visibility.then_some(source_tag_len),
         );
         if let Some(i) = goto_commands.iter().position(|o| o.depth() == depth) {
             goto_commands[i].merge(&mut goto_place);
@@ -4517,15 +4528,17 @@ impl<'gc, 'a> MovieClip<'gc> {
         Ok(())
     }
 
-    fn queue_place_object(self, reader: &mut SwfStream<'a>, version: u8) -> Result<(), Error> {
+    fn queue_place_object(self, context: &mut UpdateContext<'gc>, reader: &mut SwfStream<'a>, version: u8) -> Result<(), Error> {
         let swf_ptr = self.0.shared.get().swf_data.as_ref().as_ptr();
         let tag_ptr = reader.get_ref().as_ptr();
         let tag_start = (tag_ptr.addr() - swf_ptr.addr()) as u64;
-        let place_object = read_place_object(reader, version)?;
+        let source_tag_len = reader.get_ref().len();
+        let (place_object, missing_visibility) = read_place_object(reader, version, context)?;
 
         let new_tag = QueuedTag {
             tag_type: QueuedTagAction::Place(version),
             tag_start,
+            source_gfx_tag_len: missing_visibility.then_some(source_tag_len),
         };
         let mut queued_tags = self.0.queued_tags.borrow_mut();
         let bucket = queued_tags
@@ -4543,7 +4556,7 @@ impl<'gc, 'a> MovieClip<'gc> {
         reader: &mut SwfStream<'a>,
         version: u8,
     ) -> Result<(), Error> {
-        let place_object = read_place_object(reader, version)?;
+        let (place_object, _) = read_place_object(reader, version, context)?;
         use swf::PlaceObjectAction;
         match place_object.action {
             PlaceObjectAction::Place(id) => {
@@ -4608,6 +4621,7 @@ impl<'gc, 'a> MovieClip<'gc> {
         let new_tag = QueuedTag {
             tag_type: QueuedTagAction::Remove(version),
             tag_start,
+            source_gfx_tag_len: None,
         };
         let mut queued_tags = self.0.queued_tags.borrow_mut();
         let bucket = queued_tags
@@ -4895,18 +4909,25 @@ struct GotoPlaceObject<'a> {
 
     /// The version of the PlaceObject tag at `tag_start`.
     version: u8,
+    source_gfx_tag_len: Option<usize>,
 }
 
 /// Reads a PlaceObject tag of the given version.
 fn read_place_object<'a>(
     reader: &mut SwfStream<'a>,
     version: u8,
-) -> Result<swf::PlaceObject<'a>, Error> {
-    let place_object = if version == 1 {
-        reader.read_place_object()
+    context: &mut UpdateContext<'_>,
+) -> Result<(swf::PlaceObject<'a>, bool), Error> {
+    let (place_object, raw_missing_flags) = if version == 1 {
+        (reader.read_place_object()?, None)
+    } else if context.avm2.source_gfx_missing_initial_visibility {
+        reader.read_place_object_2_or_3_source_gfx_missing_visibility(version)?
     } else {
-        reader.read_place_object_2_or_3(version)
-    }?;
+        (reader.read_place_object_2_or_3(version)?, None)
+    };
+    if let Some(flags) = raw_missing_flags {
+        context.log.avm_warning(&format!("SOURCE_GFX_UNQUALIFIED_INITIAL_VISIBILITY raw_flags=0x{flags:04X} depth={} initial_visibility=unobserved placement_retained=true", place_object.depth));
+    }
     if place_object.action == swf::PlaceObjectAction::None && place_object.class_name.is_none() {
         // TODO How does Flash handle this?
         // Quick testing shows that it's either ignored or the movie is halted
@@ -4914,7 +4935,7 @@ fn read_place_object<'a>(
         // is produced regardless.
         return Err(swf::error::Error::invalid_data("Invalid PlaceObject type").into());
     }
-    Ok(place_object)
+    Ok((place_object, raw_missing_flags.is_some()))
 }
 
 impl<'a> GotoPlaceObject<'a> {
@@ -4925,6 +4946,7 @@ impl<'a> GotoPlaceObject<'a> {
         index: usize,
         tag_start: u64,
         version: u8,
+        source_gfx_tag_len: Option<usize>,
     ) -> Self {
         if is_rewind && let swf::PlaceObjectAction::Place(_) = place_object.action {
             place_object.matrix.get_or_insert_default();
@@ -4947,6 +4969,7 @@ impl<'a> GotoPlaceObject<'a> {
             index,
             tag_start,
             version,
+            source_gfx_tag_len,
         }
     }
 
@@ -5077,6 +5100,7 @@ impl QueuedTagList {
 pub struct QueuedTag {
     pub tag_type: QueuedTagAction,
     pub tag_start: u64,
+    pub source_gfx_tag_len: Option<usize>,
 }
 
 /// The type of queued tag.

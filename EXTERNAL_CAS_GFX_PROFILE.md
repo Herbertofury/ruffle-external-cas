@@ -105,3 +105,29 @@ script is patched, and no widget visibility or lifecycle completion is forced.
 The External CAS own two-frame fixture checks strict 2109, uncaught failure,
 continued source execution, stable-frame policy, playback mode, unaffected
 valid/numeric/explicit-scene/object/dynamic cases and disabling the profile.
+
+
+`Player::set_source_gfx_missing_initial_visibility(true)` is an additional
+narrow source-profile parser policy. It retains a new PlaceObject3 character
+placement only when its final declared visibility byte is absent. All prior
+fields must be complete; Modify/Replace, later declared fields, missing cache
+bytes and PlaceObject4 remain strict. The ordinary/default parser is unchanged.
+Queued replay is bounded to the original tag length so it cannot consume the
+next tag as a visibility value. Original flags are retained in the diagnostic.
+
+Isolated read-only native execution accepted the observed placement and name
+for four different adjacent arena bytes (2,804 instructions, no hooks). The
+native parser reads one byte beyond the authored payload; its value is not
+qualified. This adapter leaves the absent visibility field as None rather than
+synthesizing a Boolean. Each occurrence emits
+`SOURCE_GFX_UNQUALIFIED_INITIAL_VISIBILITY` with `initial_visibility=unobserved`;
+the host must retain a sticky counter and keep visual fidelity unqualified.
+The default display object state is not asserted to match that unobserved byte.
+
+Three own-byte parser tests check strict failure, placement/name/rawflags
+retention, every earlier truncation, unsupported forms and complete byte values
+0/1/127/255. An own-source MovieClip fixture checks default placement failure,
+opt-in queued placement and an authored visibility assignment. The same AS3
+constructor converges to false for all four complete byte values. No original
+asset bytes, native binary, source scripts or padding values are redistributed.
+Original CAS initialization and visual-state convergence remain separate gates.

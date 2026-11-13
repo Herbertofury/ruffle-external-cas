@@ -1903,11 +1903,27 @@ impl<'a> Reader<'a> {
         &mut self,
         place_object_version: u8,
     ) -> Result<PlaceObject<'a>> {
-        let flags = if place_object_version >= 3 {
-            PlaceFlag::from_bits_truncate(self.read_u16()?)
-        } else {
-            PlaceFlag::from_bits_truncate(self.read_u8()?.into())
-        };
+        self.read_place_object_2_or_3_policy(place_object_version, false).map(|(placement, _)| placement)
+    }
+
+    /// Explicit source-GFx acceptance policy. A new PlaceObject3 character
+    /// with only its final visibility byte absent retains that field as None.
+    /// The second result preserves the original raw flag word for diagnostics.
+    /// No byte is synthesized and the ordinary reader remains strict.
+    pub fn read_place_object_2_or_3_source_gfx_missing_visibility(
+        &mut self,
+        place_object_version: u8,
+    ) -> Result<(PlaceObject<'a>, Option<u16>)> {
+        self.read_place_object_2_or_3_policy(place_object_version, true)
+    }
+
+    fn read_place_object_2_or_3_policy(
+        &mut self,
+        place_object_version: u8,
+        allow_missing_visibility: bool,
+    ) -> Result<(PlaceObject<'a>, Option<u16>)> {
+        let raw_flags = if place_object_version >= 3 { self.read_u16()? } else { u16::from(self.read_u8()?) };
+        let flags = PlaceFlag::from_bits_truncate(raw_flags);
 
         let depth = self.read_u16()?;
 
@@ -1980,6 +1996,7 @@ impl<'a> Reader<'a> {
         } else {
             None
         };
+        let bitmap_cache_byte_missing = flags.contains(PlaceFlag::HAS_CACHE_AS_BITMAP) && self.as_slice().is_empty();
         let is_bitmap_cached = if flags.contains(PlaceFlag::HAS_CACHE_AS_BITMAP) {
             // Some incorrect SWFs appear to end the tag here, without
             // the expected 'u8'.
@@ -1991,7 +2008,14 @@ impl<'a> Reader<'a> {
         } else {
             None
         };
-        let is_visible = if flags.contains(PlaceFlag::HAS_VISIBLE) {
+        let missing_visibility = allow_missing_visibility
+            && place_object_version == 3
+            && matches!(action, PlaceObjectAction::Place(_))
+            && flags.contains(PlaceFlag::HAS_VISIBLE)
+            && !flags.intersects(PlaceFlag::OPAQUE_BACKGROUND | PlaceFlag::HAS_CLIP_ACTIONS)
+            && !bitmap_cache_byte_missing
+            && self.as_slice().is_empty();
+        let is_visible = if flags.contains(PlaceFlag::HAS_VISIBLE) && !missing_visibility {
             Some(self.read_u8()? != 0)
         } else {
             None
@@ -2014,7 +2038,7 @@ impl<'a> Reader<'a> {
             None
         };
 
-        Ok(PlaceObject {
+        Ok((PlaceObject {
             version: place_object_version,
             action,
             depth,
@@ -2032,7 +2056,7 @@ impl<'a> Reader<'a> {
             background_color,
             blend_mode,
             amf_data,
-        })
+        }, missing_visibility.then_some(raw_flags)))
     }
 
     pub fn read_remove_object_1(&mut self) -> Result<RemoveObject> {
@@ -3135,5 +3159,81 @@ pub mod tests {
                 .unwrap(),
             place_object
         );
+    }
+}
+
+#[cfg(test)]
+mod source_gfx_missing_visibility_tests {
+    use super::*;
+
+    // Own-source placement. These are not bytes from an installed movie.
+    const OWN: &[u8] = b"\x22\x20\x01\x00\x01\x00ownMarker\0";
+
+    #[test]
+    fn source_missing_visibility_is_explicit_and_preserves_the_placement() {
+        assert!(Reader::new(OWN, 20).read_place_object_2_or_3(3).is_err());
+        let (placement, flags) = Reader::new(OWN, 20)
+            .read_place_object_2_or_3_source_gfx_missing_visibility(3)
+            .unwrap();
+        assert_eq!(flags, Some(0x2022));
+        assert_eq!(placement.action, PlaceObjectAction::Place(1));
+        assert_eq!(placement.depth, 1);
+        assert_eq!(placement.name, Some(SwfStr::from_utf8_str("ownMarker")));
+        assert_eq!(placement.is_visible, None);
+    }
+
+    #[test]
+    fn source_profile_never_repairs_prior_fields_or_other_place_actions() {
+        for n in 0..OWN.len() {
+            assert!(
+                Reader::new(&OWN[..n], 20)
+                    .read_place_object_2_or_3_source_gfx_missing_visibility(3)
+                    .is_err(),
+                "prefix {n}"
+            );
+        }
+        for flags in [0x2023_u16, 0x2422, 0x6022, 0x20a2] {
+            let mut raw = OWN.to_vec();
+            raw[..2].copy_from_slice(&flags.to_le_bytes());
+            assert!(
+                Reader::new(&raw, 20)
+                    .read_place_object_2_or_3_source_gfx_missing_visibility(3)
+                    .is_err(),
+                "flags {flags:x}"
+            );
+        }
+        let modify = b"\x21\x20\x01\x00ownMarker\0";
+        assert!(
+            Reader::new(modify, 20)
+                .read_place_object_2_or_3_source_gfx_missing_visibility(3)
+                .is_err()
+        );
+        assert!(
+            Reader::new(OWN, 20)
+                .read_place_object_2_or_3_source_gfx_missing_visibility(4)
+                .is_err()
+        );
+        assert_eq!(
+            Reader::new(OWN, 20).read_place_object_2_or_3(2).unwrap(),
+            Reader::new(OWN, 20)
+                .read_place_object_2_or_3_source_gfx_missing_visibility(2)
+                .unwrap()
+                .0,
+        );
+    }
+
+    #[test]
+    fn complete_visibility_is_unchanged_and_not_reported_as_missing() {
+        for byte in [0_u8, 1, 127, 255] {
+            let mut raw = OWN.to_vec();
+            raw.push(byte);
+            let strict = Reader::new(&raw, 20).read_place_object_2_or_3(3).unwrap();
+            let (profile, flags) = Reader::new(&raw, 20)
+                .read_place_object_2_or_3_source_gfx_missing_visibility(3)
+                .unwrap();
+            assert_eq!(profile, strict);
+            assert_eq!(profile.is_visible, Some(byte != 0));
+            assert_eq!(flags, None);
+        }
     }
 }

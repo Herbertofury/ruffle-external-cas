@@ -63,3 +63,22 @@ check ran unchanged original AssetLoader and ImageLoader through initial load
 and replacement: two source COMPLETE events, one final child, zero VM errors,
 and source DDS versus GPU premultiplied pixels within one byte per channel.
 No original game asset, source script or native binary is included in this fork.
+
+
+An independent native-host dependability policy,
+`Player::set_source_gfx_max_call_depth(Some(128))`, bounds source interpreter
+calls before a recursive source failure can exhaust the worker's native stack.
+It raises the existing genuine VerifyError 1023. The per-Player RAII counter
+unwinds after caught and uncaught errors. `None` is the ordinary Flash default;
+an explicit bound accepts 1 through 256. Existing time/instruction limits stay.
+The built-in error constructor is temporarily exempted so reporting overflow
+cannot recursively overflow the same guard. No successful source result or
+missing service is substituted, and this does not qualify native GFx limits.
+
+Own source tests retain a 32-call result, caught and uncaught infinite recursion
+with 1023, a succeeding later callback, a reset depth counter, and isolation of
+another default Player. Private debug measurement at depth 128 used 394,208
+native stack bytes in the own fixture and 343,392 in the actual unresolved CAS
+trial-data cycle. The latter survived 120 frames while retaining its UI-loading
+and source-error state. No diagnostic guard, tracing or original asset is copied
+into this checkpoint. Fixing each missing source host contract remains required.

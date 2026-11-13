@@ -1,6 +1,6 @@
 use crate::avm2::Multiname;
 use crate::avm2::activation::Activation;
-use crate::avm2::error::{Error, make_error_1001};
+use crate::avm2::error::{Error, make_error_1001, make_error_1023};
 use crate::avm2::method::{Method, MethodKind, ParamConfig};
 use crate::avm2::object::{ClassObject, FunctionObject};
 use crate::avm2::scope::ScopeChain;
@@ -240,6 +240,31 @@ pub fn exec<'gc>(
     activation: &mut Activation<'_, 'gc>,
     callee: Option<FunctionObject<'gc>>,
 ) -> Result<Value<'gc>, Error<'gc>> {
+    // A selected native-source host may bound interpreter recursion before
+    // exhausting its worker's native stack. Ordinary Flash leaves this None.
+    struct SourceCallDepthGuard(std::rc::Rc<std::cell::Cell<u16>>);
+    impl Drop for SourceCallDepthGuard {
+        fn drop(&mut self) {
+            self.0.set(self.0.get().saturating_sub(1));
+        }
+    }
+    let _source_call_depth_guard = if let Some(limit) = activation.avm2().source_gfx_max_call_depth {
+        let depth = activation.avm2().source_gfx_call_depth.clone();
+        if depth.get() >= limit {
+            // The built-in VerifyError constructor itself enters this path.
+            // Allow that bounded built-in construction, then restore the host
+            // policy. Do not translate the overflow into a valid source value.
+            activation.avm2().source_gfx_max_call_depth = None;
+            let error = make_error_1023(activation);
+            activation.avm2().source_gfx_max_call_depth = Some(limit);
+            return Err(error);
+        }
+        depth.set(depth.get() + 1);
+        Some(SourceCallDepthGuard(depth))
+    } else {
+        None
+    };
+
     let mc = activation.gc();
 
     let caller_dxns = activation.default_xml_namespace();

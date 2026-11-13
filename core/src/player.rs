@@ -2621,6 +2621,16 @@ impl Player {
     pub fn set_source_gfx_loader_content_detach(&mut self,enabled:bool) {
         self.mutate_with_update_context(|context|context.avm2.source_gfx_loader_content_detach=enabled);
     }
+    /// Bound a selected source-GFx profile before native stack exhaustion.
+    /// This is a host dependability policy, not claimed native GFx semantics.
+    /// None preserves the ordinary Flash path. Limits must be 1..=256.
+    pub fn set_source_gfx_max_call_depth(&mut self, limit: Option<u16>) -> Result<(), &'static str> {
+        if limit.is_some_and(|limit| limit == 0 || limit > 256) {
+            return Err("Source GFx call-depth limit must be 1..=256 or None");
+        }
+        self.mutate_with_update_context(|context| context.avm2.source_gfx_max_call_depth = limit);
+        Ok(())
+    }
     pub fn spoofed_url(&self) -> Option<&str> {
         self.spoofed_url.as_deref()
     }

@@ -187,6 +187,8 @@ pub struct Avm2<'gc> {
     pub source_gfx_early_class_publication: bool,
     #[collect(require_static)]
     pub source_gfx_soft_public_reads: bool,
+    #[collect(require_static)]
+    pub source_gfx_drop_excess_as3_args: bool,
 }
 
 impl<'gc> Avm2<'gc> {
@@ -236,6 +238,7 @@ impl<'gc> Avm2<'gc> {
             optimizer_settings: OptimizerSettings::enable_all(),
             source_gfx_early_class_publication: false,
             source_gfx_soft_public_reads: false,
+            source_gfx_drop_excess_as3_args: false,
         }
     }
 

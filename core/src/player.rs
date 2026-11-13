@@ -2611,6 +2611,11 @@ impl Player {
     pub fn set_source_gfx_early_class_publication(&mut self,enabled:bool){
         self.mutate_with_update_context(|context|context.avm2.source_gfx_early_class_publication=enabled);
     }
+    /// Explicit source-GFx AS3 surplus-argument compatibility. Native builtins,
+    /// missing required arguments, coercion and variadic collection stay strict.
+    pub fn set_source_gfx_drop_excess_as3_args(&mut self,enabled:bool) {
+        self.mutate_with_update_context(|context|context.avm2.source_gfx_drop_excess_as3_args=enabled);
+    }
     pub fn spoofed_url(&self) -> Option<&str> {
         self.spoofed_url.as_deref()
     }

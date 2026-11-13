@@ -216,6 +216,8 @@ impl<'a, 'gc> Activation<'a, 'gc> {
         user_arguments: FunctionArgs<'_, 'gc>,
     ) -> Result<(), Error<'gc>> {
         if user_arguments.len() > signature.len() && !method.is_variadic() && !method.is_unchecked()
+            && !(self.avm2().source_gfx_drop_excess_as3_args
+                && matches!(method.method_kind(), crate::avm2::method::MethodKind::Bytecode { .. }))
         {
             return Err(make_error_1063(self, method, user_arguments.len()));
         }

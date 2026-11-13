@@ -26,3 +26,14 @@ an actual optional-public-field read requirement. Independent native GFx class
 initialization equivalence is not claimed. Complete original CAS initialization,
 host-service behavior and all editing states remain qualification gates. These
 switches are never a global Flash default or a substitute for missing host data.
+
+A third opt-in switch, `set_source_gfx_drop_excess_as3_args(true)`, ignores
+surplus arguments only for AS3 bytecode methods. Missing required arguments,
+typed coercion errors, native builtin arity checks and variadic collection keep
+the original path. It defaults false. Actual source event dispatchers pass a
+payload to original zero-argument methods, establishing the source-specific
+producer/consumer need. Independent native GFx equivalence remains unclaimed.
+The own-source ExcessArgsFixture compares the same bytes in both modes and
+retains strict 1063, missing 1063, coercion 1034, native 1063 and rest semantics.
+Eight adapter VM fixtures passed before this source-only promotion. No private
+depth guard, native binary, installed script or game asset is included.
